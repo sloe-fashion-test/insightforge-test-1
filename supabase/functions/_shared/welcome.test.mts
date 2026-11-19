@@ -41,6 +41,16 @@ test("job context carries brand from Visual Studio, canvas and checklist", () =>
   assert.match(j.prompt, /\[pending\] Connect your LinkedIn page/);
 });
 
+test("brand reads visual_studio_config stored as a JSON text column", () => {
+  const asText = { ...profile, visual_studio_config: JSON.stringify(profile.visual_studio_config) };
+  const j = buildWelcomeJob(asText, facts);
+  assert.equal(j.context.brand.background, "#051C2E");
+  assert.equal(j.context.brand.sparing_accent, "#F877AD");
+  assert.equal(j.context.brand.display_font, "Outfit");
+  const broken = buildWelcomeJob({ ...profile, visual_studio_config: "{not json" }, facts);
+  assert.equal(broken.context.brand.background, "#111827");
+});
+
 test("word contract: exact keys and limits", () => {
   assert.equal(validateWelcomeScript(script).ok, true);
   assert.equal(validateWelcomeScript({ ...script, html: "<b>x</b>" }).ok, false);

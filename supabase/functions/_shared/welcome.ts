@@ -50,7 +50,13 @@ function fontFamily(spec: unknown): string | null {
 }
 
 export function brandFromProfile(profile: any): Record<string, string> {
-  const vs = profile?.visual_studio_config ?? {};
+  // profiles.visual_studio_config is a TEXT column holding JSON (not jsonb):
+  // parse it, or every brand value silently falls back to the defaults.
+  let vs: any = profile?.visual_studio_config ?? {};
+  if (typeof vs === "string") {
+    try { vs = JSON.parse(vs); } catch { vs = {}; }
+  }
+  if (!vs || typeof vs !== "object") vs = {};
   const pick = (v: unknown, d: string) => (typeof v === "string" && HEX.test(v) ? v : d);
   return {
     business_name: clip(profile?.business_name, 60),
