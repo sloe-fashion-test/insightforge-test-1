@@ -1,0 +1,185 @@
+import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
+import { getPublisher } from "../_shared/publisher/index.ts";
+import { getDraftImageUrl } from "../_shared/get-draft-image-url.ts";
+import { maxCharsFor, requiresMedia, platformLabel } from "../_shared/publisher/platform-rules.ts";
+
+// Publishes an approved draft immediately (or within ~60 seconds) by scheduling
+// it at the current time. Unlike publish-to-zernio, this bypasses the slot
+// resolver -- it's a manual "send now" action.
+//
+// Platform-aware: draft.platform drives the char limit, the media
+// requirement, and which social_connections row is used -- same rules as
+// publish-to-zernio (see platform-rules.ts). A platform that requires media
+// and has no ready image is rejected outright here (400), never
+// substituted with a fallback/reused image.
+//
+// Idempotent: if external_post_id is already set and publish_status is
+// "published_now", returns success immediately without re-posting.
+//
+// Same race as publish-to-zernio: the idempotency check above is read-then-
+// act, so two near-simultaneous "Post Now" clicks (or a Post Now racing an
+// automated approve-and-publish) can both pass it before either writes back.
+// The provider rejects the second as duplicate content; the failure write
+// below only applies if a concurrent call hasn't already set external_post_id
+// in the meantime, so a late rejection can't overwrite an earlier success.
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  try {
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return json({ error: "Authentication required" }, 401);
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) return json({ error: "Invalid or expired token" }, 401);
+    const userId = user.id;
+
+    const { draftId } = await req.json().catch(() => ({}));
+    if (!draftId) return json({ error: "draftId is required" }, 400);
+
+    // Load the draft (scoped to the user).
+    const { data: draft } = await supabase
+      .from("drafts")
+      .select("id, user_id, body, approval_status, external_post_id, publish_status, platform")
+      .eq("id", draftId)
+      .eq("user_id", userId)
+      .single();
+
+    if (!draft) return json({ error: "Draft not found or access denied" }, 404);
+
+    // Idempotency: already posted via post-now.
+    if (draft.external_post_id && draft.publish_status === "published_now") {
+      return json({ ok: true, alreadyPosted: true, externalPostId: draft.external_post_id });
+    }
+
+    if (draft.approval_status !== "approved") {
+      return json({ error: "Draft must be approved before posting" }, 409);
+    }
+
+    const platform: string = draft.platform ?? "linkedin";
+    const label = platformLabel(platform);
+
+    const text = (draft.body ?? "").trim();
+    if (!text) return json({ error: "Draft has no body to publish" }, 400);
+    const maxChars = maxCharsFor(platform);
+    if (text.length > maxChars) {
+      return json(
+        { error: `Draft is ${text.length} characters; ${label} allows ${maxChars}` },
+        400,
+      );
+    }
+
+    const publisher = getPublisher();
+
+    // The connected account for this draft's platform.
+    const { data: conn } = await supabase
+      .from("social_connections")
+      .select("external_account_id, status")
+      .eq("user_id", userId)
+      .eq("provider", publisher.name)
+      .eq("platform", platform)
+      .maybeSingle();
+
+    if (!conn?.external_account_id) {
+      return json(
+        { error: `${label} is not connected. Connect it in Settings first.` },
+        400,
+      );
+    }
+
+    // Image lookup before the media-requirement check -- never fall back to
+    // a default/reused image for a platform that requires one (see
+    // platform-rules.ts and the no-repeat/no-fallback rule for Instagram).
+    const imageUrl = await getDraftImageUrl(supabase, draft.id);
+    if (requiresMedia(platform) && !imageUrl) {
+      return json(
+        { error: `${label} requires an image and none is ready yet for this draft. Generate/approve the visual first -- this will never auto-substitute a fallback image.` },
+        400,
+      );
+    }
+
+    // Schedule 60 seconds from now so the provider has time to process it.
+    // This is effectively "now" from the user's perspective.
+    const scheduledFor = new Date(Date.now() + 60_000).toISOString();
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+    try {
+      const result = await publisher.publish({
+        text,
+        platform,
+        accountId: conn.external_account_id,
+        scheduledFor,
+        timezone,
+        imageUrl,
+      });
+
+      await supabase
+        .from("drafts")
+        .update({
+          external_post_id: result.externalPostId,
+          publish_status: "published_now",
+          publish_error: null,
+          scheduled_for: scheduledFor,
+        })
+        .eq("id", draft.id);
+
+      return json({
+        ok: true,
+        status: "published_now",
+        externalPostId: result.externalPostId,
+        scheduledFor,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Provider publish failed";
+
+      // See file header: only mark failed if a concurrent call hasn't
+      // already set external_post_id for this draft in the meantime.
+      const { data: updated } = await supabase
+        .from("drafts")
+        .update({ publish_status: "failed", publish_error: msg })
+        .eq("id", draft.id)
+        .is("external_post_id", null)
+        .select("id")
+        .maybeSingle();
+
+      if (!updated) {
+        const { data: current } = await supabase
+          .from("drafts")
+          .select("external_post_id, publish_status")
+          .eq("id", draft.id)
+          .single();
+        return json({
+          ok: true,
+          alreadyPosted: current?.publish_status === "published_now",
+          alreadyScheduled: current?.publish_status === "scheduled",
+          externalPostId: current?.external_post_id,
+          status: current?.publish_status,
+        });
+      }
+
+      return json({ ok: false, status: "failed", error: msg }, 502);
+    }
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "Unknown error" }, 500);
+  }
+});
