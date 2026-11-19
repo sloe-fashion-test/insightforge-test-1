@@ -4,7 +4,7 @@ import path from "path";
 import { componentTagger } from "lovable-tagger";
 
 export default defineConfig(({ mode }) => ({
-  base: '/insightforge-test-1/',
+  base: '/insightforge-app/',
   server: {
     host: "::",
     port: 8080,

@@ -143,7 +143,7 @@ SELECT cron.schedule(
   '0 3 * * *', -- Every day at 3:00 AM UTC
   $$
   SELECT net.http_post(
-    url := 'https://YOUR_PROJECT_REF.supabase.co/functions/v1/cleanup-old-emails',
+    url := 'https://xtaslgxrgzksojtoekmz.supabase.co/functions/v1/cleanup-old-emails',
     headers := '{"Content-Type": "application/json", "Authorization": "Bearer YOUR_SERVICE_ROLE_KEY"}'::jsonb,
     body := '{}'::jsonb
   ) AS request_id;
@@ -177,7 +177,7 @@ jobs:
       - name: Trigger cleanup
         run: |
           curl -X POST \
-            'https://YOUR_PROJECT_REF.supabase.co/functions/v1/cleanup-old-emails' \
+            'https://xtaslgxrgzksojtoekmz.supabase.co/functions/v1/cleanup-old-emails' \
             -H 'Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}' \
             -H 'Content-Type: application/json'
 ```
