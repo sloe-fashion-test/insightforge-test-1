@@ -182,7 +182,12 @@ serve(async (req) => {
         title = titleMatch?.[1]?.trim() || "Untitled Article";
         console.log("📌 Extracted title:", title);
 
-        textContent = articleHtml
+        // Prefer the page's main content over menus and footers when the page
+        // marks it up. This keeps the first lines of the card about the
+        // article itself, which is what generation falls back on.
+        const mainMatch = /<(main|article)\b[^>]*>([\s\S]*?)<\/\1>/i.exec(articleHtml);
+        const contentHtml = mainMatch && mainMatch[2].length > 800 ? mainMatch[2] : articleHtml;
+        textContent = contentHtml
           .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
           .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
           .replace(/<[^>]+>/g, " ")
