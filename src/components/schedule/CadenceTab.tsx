@@ -207,6 +207,24 @@ export const CadenceTab = () => {
   } | null>(null);
   const startedHereRef = useRef(false);
 
+  // The Launch page sends the owner here with ?autorun=12. Once the cadence
+  // is loaded, start the first batch of drafts by itself, one time.
+  const autoRanRef = useRef(false);
+  useEffect(() => {
+    if (autoRanRef.current || loading || batchRunning || isDirty || !userId) return;
+    const n = parseInt(new URLSearchParams(window.location.search).get("autorun") || "", 10);
+    if (!n || n < 1) return;
+    const hasActive = slots.some((s) => s.is_active && !s._isNew && s.frequency !== "as_needed");
+    if (!hasActive || selectedFormatIds.size === 0) return;
+    autoRanRef.current = true;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("autorun");
+    window.history.replaceState({}, "", url.toString());
+    setBatchTarget(n);
+    void runFastForward(n);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, slots, selectedFormatIds, batchRunning, isDirty, userId]);
+
   useEffect(() => {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -456,7 +474,8 @@ export const CadenceTab = () => {
   // more honest than a spinner with no feedback for a couple of minutes.
   // A single failed run is logged and skipped rather than aborting the rest
   // of the batch.
-  const runFastForward = async () => {
+  const runFastForward = async (targetOverride?: number) => {
+    const target = typeof targetOverride === "number" ? targetOverride : batchTarget;
     if (!userId) return;
     if (isDirty) {
       toast.error("You have unsaved cadence changes — save them first so fast-forward uses the current setup");
@@ -493,17 +512,17 @@ export const CadenceTab = () => {
     let pending = 0;
     let completed = 0;
     await persistFF(userId, {
-      running: true, target_count: batchTarget, done: 0, total: batchTarget,
+      running: true, target_count: target, done: 0, total: target,
       current_label: "", started_at: new Date().toISOString(),
     });
 
     try {
       for (const item of queue) {
-        if (attempted >= batchTarget) break;
+        if (attempted >= target) break;
         attempted++;
         const label = `${nameOf(natures, item.slot.nature_id) ?? "…"} ${nameOf(formats, item.slot.format_id) ?? "…"} — ${item.date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`;
-        setBatchProgress({ done: created, total: batchTarget, label });
-        await persistFF(userId, { done: created, total: batchTarget, current_label: label });
+        setBatchProgress({ done: created, total: target, label });
+        await persistFF(userId, { done: created, total: target, current_label: label });
 
         const { data, error } = await supabase.functions.invoke("execute-autopilot-template", {
           body: { scheduleId: item.slot.id, isTestRun: false, scheduledForOverride: item.date.toISOString() },
@@ -526,7 +545,7 @@ export const CadenceTab = () => {
       startedHereRef.current = false;
       const completedAt = new Date().toISOString();
       await persistFF(userId, {
-        running: false, done: created, total: batchTarget, completed_at: completedAt,
+        running: false, done: created, total: target, completed_at: completedAt,
         last_created: created, last_attempted: attempted, last_failed: failed,
       });
       setLastRun({ completedAt, created, attempted, failed });
@@ -638,7 +657,7 @@ export const CadenceTab = () => {
             />
             <span className="text-sm text-muted-foreground">scheduled slot-occurrences, in cadence order</span>
             <Button
-              onClick={runFastForward}
+              onClick={() => runFastForward()}
               disabled={batchRunning || (cadenceFormats.length > 0 && selectedFormatIds.size === 0)}
               className="ml-auto"
             >
