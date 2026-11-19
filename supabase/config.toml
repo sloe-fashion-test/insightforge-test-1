@@ -60,3 +60,6 @@ verify_jwt = false
 
 [functions.welcome-start]
 verify_jwt = false
+
+[functions.load-launch-pack]
+verify_jwt = true
