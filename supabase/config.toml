@@ -57,3 +57,6 @@ verify_jwt = false
 
 [functions.claude-job-status]
 verify_jwt = false
+
+[functions.welcome-start]
+verify_jwt = false

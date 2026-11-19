@@ -14,8 +14,10 @@ serve(async (req) => {
   // Body cap BEFORE parse: visual jobs carry pngBase64 (cap 4MB decoded, so
   // ~5.6MB encoded). 8MB request bound rejects runaway bodies without parsing
   // them; non-visual payloads are kilobytes and unaffected.
+  // Welcome-video jobs carry an MP4 (cap 8MB decoded) plus a GIF preview
+  // (cap 3MB decoded): ~14.7MB encoded, so the bound is 16MB.
   const rawBody = await req.text().catch(() => "");
-  if (rawBody.length > 8 * 1024 * 1024) return json({ error: "body too large" }, 413);
+  if (rawBody.length > 16 * 1024 * 1024) return json({ error: "body too large" }, 413);
   let parsed: any;
   try { parsed = JSON.parse(rawBody || "{}"); } catch { return json({ error: "invalid json" }, 400); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "invalid json" }, 400);
@@ -32,6 +34,9 @@ serve(async (req) => {
   const png_base64: string | undefined = png_camel ?? png_snake;
   if (!job_id || !completion_token || !output) return json({ error: "missing fields" }, 400);
   const db = makeDb(createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!));
-  const r = await completeJob(db, { jobId: job_id, completionToken: completion_token, output, runUrl: run_url, pngBase64: png_base64 });
+  const mp4Base64 = typeof parsed.mp4Base64 === "string" ? parsed.mp4Base64 : undefined;
+  const gifBase64 = typeof parsed.gifBase64 === "string" ? parsed.gifBase64 : undefined;
+  const r = await completeJob(db, { jobId: job_id, completionToken: completion_token, output, runUrl: run_url,
+    pngBase64: png_base64, mp4Base64, gifBase64 });
   return json(r.body, r.status);
 });

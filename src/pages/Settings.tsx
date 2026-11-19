@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { ArrowLeft, Trash2, Moon, Sun, AlertTriangle, Shield, Loader2, Linkedin, Instagram, CheckCircle2, DollarSign, Eye, ChevronDown, Clock } from "lucide-react";
 import { useTheme } from "next-themes";
 import { KNOWN_PLATFORMS, platformLabel } from "@/lib/platform";
+import { WelcomeEmailCard } from "@/components/WelcomeEmailCard";
 
 const PLATFORM_ICONS: Record<string, typeof Linkedin> = {
   linkedin: Linkedin,
@@ -525,6 +526,8 @@ const Settings = () => {
             </Card>
           );
         })}
+
+        <WelcomeEmailCard />
 
         {/* Privacy */}
         <Card className="mb-6 border-destructive/50">

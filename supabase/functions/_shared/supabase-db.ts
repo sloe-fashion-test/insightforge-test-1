@@ -123,5 +123,30 @@ export function makeDb(supabase: any): Db {
       const { data: pub } = supabase.storage.from("draft-visuals").getPublicUrl(path);
       return { url: pub.publicUrl };
     },
+    // Welcome email + video (welcome.ts)
+    async setAutomationConfig(key, value) {
+      await supabase.from("automation_config").upsert({ key, value }, { onConflict: "key" });
+    },
+    async getProfileEmail(userId) {
+      const { data } = await supabase.from("profiles").select("email").eq("user_id", userId).maybeSingle();
+      return data?.email ?? null;
+    },
+    async uploadWelcomeMedia(path, bytes, contentType) {
+      const { error } = await supabase.storage.from("welcome-media")
+        .upload(path, bytes, { contentType, upsert: true });
+      if (error) return { error: error.message };
+      const { data: pub } = supabase.storage.from("welcome-media").getPublicUrl(path);
+      return { url: pub.publicUrl };
+    },
+    async sendEmail({ from, to, subject, html }) {
+      const key = Deno.env.get("RESEND_API_KEY") ?? "";
+      if (!key) return { ok: false, status: 0, error: "RESEND_API_KEY not set" };
+      const r = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to: [to], subject, html }),
+      });
+      return r.ok ? { ok: true, status: r.status } : { ok: false, status: r.status, error: await r.text().catch(() => "") };
+    },
   };
 }

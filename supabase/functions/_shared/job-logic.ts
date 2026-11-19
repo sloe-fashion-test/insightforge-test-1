@@ -5,6 +5,7 @@
 import { findCollision, collisionVerdict, type NoveltyWindowRow } from "./_shared-novelty.ts";
 import { writeDraftsFromSnapshot, type SnapshotCtx, type DraftOutput } from "./_shared-draft-writer.ts";
 import { completeVisualJob, failVisualPlaceholder } from "./visual-logic.ts";
+import { completeWelcomeJob, WELCOME_KIND, type WelcomeDb } from "./welcome.ts";
 
 export interface Db {
   getJob(id: string): Promise<any | null>;
@@ -37,6 +38,11 @@ export interface Db {
   // Visual render inputs for fingerprint recomputation at completion
   // (visual-logic.ts). NEVER includes ai_api_key/provider/model/endpoint.
   getProfileVisualConfig(userId: string): Promise<any | null>;
+  // Welcome email + video (welcome.ts)
+  setAutomationConfig: WelcomeDb["setAutomationConfig"];
+  getProfileEmail: WelcomeDb["getProfileEmail"];
+  uploadWelcomeMedia: WelcomeDb["uploadWelcomeMedia"];
+  sendEmail: WelcomeDb["sendEmail"];
 }
 
 // Tenant pinning reads from env, fail-closed: an unset/empty TENANT_USER_ID
@@ -147,6 +153,7 @@ export function validateOutput(output: unknown, allowedCardIds: Set<string>): st
 export async function completeJob(db: Db, args: {
   jobId: string; completionToken: string; output: unknown; runUrl?: string;
   now?: Date; noveltyWindowDays?: number; pngBase64?: string;
+  mp4Base64?: string; gifBase64?: string;
 }): Promise<{ status: number; body: any }> {
   const now = args.now ?? new Date();
   const job = await db.getJob(args.jobId);
@@ -183,6 +190,10 @@ export async function completeJob(db: Db, args: {
   if (claimed.path === "interactive") {
     if ((snap as any)?.interactiveKind === "draft-visual") {
       return await completeVisualJob(db, { jobId: args.jobId, job: claimed, output: args.output, pngBase64: args.pngBase64, now });
+    }
+    if ((snap as any)?.interactiveKind === WELCOME_KIND) {
+      return await completeWelcomeJob(db, { jobId: args.jobId, job: claimed, output: args.output,
+        mp4Base64: args.mp4Base64, gifBase64: args.gifBase64, now });
     }
     const o = args.output as any;
     // C2 size bound: results ride on the job row (jsonb) and are read back by
