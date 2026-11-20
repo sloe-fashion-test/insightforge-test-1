@@ -136,7 +136,7 @@ const Settings = () => {
     loadProfile();
   }, [navigate]);
 
-  const callConnect = async (action: "status" | "start" | "sync", platform: string) => {
+  const callConnect = async (action: "status" | "start" | "sync" | "switch_type", platform: string, extra: Record<string, unknown> = {}) => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
     const label = platformLabel(platform);
@@ -150,11 +150,16 @@ const Settings = () => {
       window.location.href = data.authorizationUrl;
       return;
     }
-    const { data, error } = await supabase.functions.invoke("zernio-connect", { body: { action, platform } });
-    if (error) { if (action === "sync") toast.error("Sync failed: " + error.message); return; }
+    const { data, error } = await supabase.functions.invoke("zernio-connect", { body: { action, platform, ...extra } });
+    if (error) { if (action === "sync" || action === "switch_type") toast.error(`${action === "sync" ? "Sync" : "Switch"} failed: ` + error.message); return; }
+    if (action === "switch_type") {
+      if (data?.error) { toast.error(data.error); return; }
+      toast.success(extra.accountType === "personal" ? `${label} now posts to your personal profile` : `${label} now posts to your company page`);
+    }
     if (action === "sync") {
       if (data?.connected) toast.success(`${label} connected`);
       else toast.warning(data?.error || `No ${label} account found yet`);
+      if (data?.warning) toast.warning(data.warning, { duration: 20000 });
     }
     setConnections((c) => ({ ...c, [platform]: data?.connection ?? null }));
   };
@@ -510,6 +515,13 @@ const Settings = () => {
                 ) : (
                   <p className="text-sm text-muted-foreground">No {label} account connected yet.</p>
                 )}
+                {conn?.external_account_id && platform === "linkedin" ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
+                    <span className="text-muted-foreground">Posts go to the account shown above. If it is your personal profile, switch it to your company page.</span>
+                    <Button size="sm" onClick={() => callConnect("switch_type", platform, { accountType: "organization" })}>Post to company page</Button>
+                    <Button variant="outline" size="sm" onClick={() => callConnect("switch_type", platform, { accountType: "personal" })}>Use personal profile</Button>
+                  </div>
+                ) : null}
                 <Button
                   onClick={async () => {
                     setConnectBusy((b) => ({ ...b, [platform]: true }));
