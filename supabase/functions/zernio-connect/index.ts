@@ -29,6 +29,32 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 
+// Zernio saves the member's PERSONAL LinkedIn profile on a plain connect.
+// This switches an already-connected account to company-page (organization)
+// posting, or back to personal, without a second sign-in.
+// PUT /v1/accounts/{accountId}/linkedin-organization  { accountType }
+async function setLinkedInAccountType(
+  accountId: string,
+  accountType: "personal" | "organization",
+): Promise<{ accountType?: string; accountName?: string }> {
+  const res = await fetch(
+    `https://zernio.com/api/v1/accounts/${encodeURIComponent(accountId)}/linkedin-organization`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${Deno.env.get("ZERNIO_API_KEY") ?? ""}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ accountType }),
+    },
+  );
+  const text = await res.text();
+  let body: any = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!res.ok) throw new Error(body?.error || body?.message || text || `HTTP ${res.status}`);
+  return body ?? {};
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -47,7 +73,7 @@ serve(async (req) => {
     if (authError || !user) return json({ error: "Invalid or expired token" }, 401);
     const userId = user.id;
 
-    const { action, redirectUrl, platform } = await req.json().catch(() => ({ action: "status" }));
+    const { action, redirectUrl, platform, accountType } = await req.json().catch(() => ({ action: "status" } as any));
     const PLATFORM = platform ?? "linkedin";
     const publisher = getPublisher();
     const provider = publisher.name;
@@ -65,18 +91,37 @@ serve(async (req) => {
     }
 
     if (action === "sync") {
-      const accounts = await publisher.listAccounts(PLATFORM);
+      let accounts = await publisher.listAccounts(PLATFORM);
+      // Prefer accounts on this install's default Zernio profile, so another
+      // client's account on the same key is never picked.
+      const defaultProfile = await publisher.getDefaultProfileId().catch(() => null);
+      if (defaultProfile) {
+        const own = accounts.filter((a) => a.profileId === defaultProfile);
+        if (own.length) accounts = own;
+      }
       if (!accounts.length) {
         return json({ connected: false, error: `No ${platformLabel(PLATFORM)} account found on the provider yet` }, 404);
       }
       const acct = accounts[0];
+      let warning: string | null = null;
+      let switchedName: string | null = null;
+      if (PLATFORM === "linkedin") {
+        try {
+          const r = await setLinkedInAccountType(acct.accountId, "organization");
+          switchedName = r.accountName ?? null;
+        } catch (e) {
+          warning = "Connected to your personal LinkedIn profile. LinkedIn would not switch it to a company page: " +
+            (e instanceof Error ? e.message : "unknown error") +
+            ". Check that the LinkedIn user is an admin of the company page.";
+        }
+      }
       const row = {
         user_id: userId,
         provider,
         platform: PLATFORM,
         external_account_id: acct.accountId,
         external_profile_id: acct.profileId ?? null,
-        account_label: acct.displayName ?? acct.username ?? null,
+        account_label: switchedName ?? acct.displayName ?? acct.username ?? null,
         status: acct.status ?? "active",
         connected_at: new Date().toISOString(),
       };
@@ -86,7 +131,36 @@ serve(async (req) => {
         .select()
         .single();
       if (error) return json({ error: error.message }, 500);
-      return json({ connected: true, connection: data });
+      return json({ connected: true, connection: data, warning });
+    }
+
+    // switch_type -> change a connected LinkedIn account between company page
+    // (organization) and personal profile. Errors come back with HTTP 200 and
+    // an `error` field so the browser can show the real reason.
+    if (action === "switch_type") {
+      if (PLATFORM !== "linkedin") return json({ error: "Only LinkedIn has personal and company modes." });
+      const { data: conn } = await supabase
+        .from("social_connections")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("provider", provider)
+        .eq("platform", PLATFORM)
+        .maybeSingle();
+      if (!conn?.external_account_id) return json({ error: "Connect LinkedIn first." });
+      const target = accountType === "personal" ? "personal" : "organization";
+      try {
+        const r = await setLinkedInAccountType(conn.external_account_id, target);
+        const { data: updated, error: upErr } = await supabase
+          .from("social_connections")
+          .update({ account_label: r.accountName ?? conn.account_label })
+          .eq("id", conn.id)
+          .select()
+          .single();
+        if (upErr) return json({ error: upErr.message });
+        return json({ connected: true, connection: updated, accountType: r.accountType ?? target });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "Switch failed" });
+      }
     }
 
     // status (default)
